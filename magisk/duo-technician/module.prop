@@ -1,0 +1,6 @@
+id=duo-technician
+name=Surface Duo Technician Toolkit
+version=1.4.2
+versionCode=10402
+author=Surface Duo NetHunter contributors
+description=ABI-validated NetHunter radio, CAN, SDR, isolated USB gadget profiles, HID, remote-storage, network-lab, Kali, and diagnostics for Surface Duo 1.

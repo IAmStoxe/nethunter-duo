@@ -1,0 +1,52 @@
+--- a/drivers/usb/gadget/function/f_midi.c
++++ b/drivers/usb/gadget/function/f_midi.c
+@@ -1233,30 +1233,43 @@
+ static DEVICE_ATTR(alsa, S_IRUGO, alsa_show, NULL);
+ 
+ static struct device_attribute *alsa_function_attributes[] = {
+ 	&dev_attr_alsa,
+ 	NULL
+ };
+ 
++static DEFINE_MUTEX(alsa_device_lock);
++static bool alsa_device_created;
++
+ static int create_alsa_device(struct usb_function_instance *fi)
+ {
+ 	struct device *dev;
+ 	struct device_attribute **attrs;
+ 	struct device_attribute *attr;
+ 	int err = 0;
+ 
++	mutex_lock(&alsa_device_lock);
++	if (alsa_device_created)
++		goto out;
++
+ 	dev = create_function_device("f_midi");
+-	if (IS_ERR(dev))
+-		return PTR_ERR(dev);
++	if (IS_ERR(dev)) {
++		err = PTR_ERR(dev);
++		goto out;
++	}
+ 
+ 	attrs = alsa_function_attributes;
+ 	if (attrs) {
+ 		while ((attr = *attrs++) && !err)
+ 			err = device_create_file(dev, attr);
+ 		if (err) {
+ 			device_destroy(dev->class, dev->devt);
+-			return -EINVAL;
++			err = -EINVAL;
++			goto out;
+ 		}
+ 	}
+ 	dev_set_drvdata(dev, fi);
+-	return 0;
++	alsa_device_created = true;
++out:
++	mutex_unlock(&alsa_device_lock);
++	return err;
+ }
+ #else
+ static int create_alsa_device(struct usb_function_instance *fi)

@@ -1,0 +1,95 @@
+#!/system/bin/sh
+set -u
+
+MODDIR=/data/adb/modules/duo-technician
+LAUNCHER=$MODDIR/payload/startkali.sh
+ROOTFS=/data/local/nhsystem/kali-arm64
+
+die() { echo "duo-kali: $*" >&2; exit 1; }
+[ "$(id -u)" = 0 ] || die "run with su -c"
+[ -x "$LAUNCHER" ] || die "missing Kali launcher"
+[ -x "$ROOTFS/bin/bash" ] || die "Kali rootfs is not installed"
+
+run() {
+  [ "$#" -eq 1 ] || die 'command must be supplied as one quoted argument'
+  "$LAUNCHER" -c "$1"
+}
+
+install_profile() {
+  profile=$MODDIR/payload/duo-profile.sh
+  [ -r "$profile" ] || return 0
+  if ! cmp -s "$profile" "$ROOTFS/etc/profile.d/duo-technician.sh" 2>/dev/null; then
+    cp "$profile" "$ROOTFS/etc/profile.d/duo-technician.sh"
+    chmod 0644 "$ROOTFS/etc/profile.d/duo-technician.sh"
+  fi
+}
+
+install_profile
+
+. "$MODDIR/payload/ssh-policy.sh" || die 'missing SSH policy checker'
+
+authorize_key() {
+  [ "$#" -eq 1 ] || die 'usage: duo-kali ssh authorize /sdcard/path/key.pub'
+  key_file=$1
+  case "$key_file" in
+    /sdcard/*|/storage/emulated/0/*|/data/local/tmp/*) ;;
+    *) die 'public key must be below shared storage or /data/local/tmp' ;;
+  esac
+  [ -f "$key_file" ] && [ ! -L "$key_file" ] || die "not a regular public-key file: $key_file"
+  key=$(sed -n '1p' "$key_file" | tr -d '\r')
+  if sed -n '2,$p' "$key_file" | grep -q '[^[:space:]]'; then
+    die 'public-key file must contain exactly one non-empty line'
+  fi
+  printf '%s\n' "$key" | grep -Eq \
+    '^(ssh-(rsa|ed25519)|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh.com|sk-ecdsa-sha2-nistp256@openssh.com) [A-Za-z0-9+/=]+([[:space:]].*)?$' ||
+    die 'unsupported or malformed OpenSSH public key'
+
+  install -d -m 0700 "$ROOTFS/root/.ssh" "$ROOTFS/etc/ssh/sshd_config.d"
+  touch "$ROOTFS/root/.ssh/authorized_keys"
+  chmod 0600 "$ROOTFS/root/.ssh/authorized_keys"
+  grep -Fqx "$key" "$ROOTFS/root/.ssh/authorized_keys" ||
+    printf '%s\n' "$key" >> "$ROOTFS/root/.ssh/authorized_keys"
+  printf '%s\n' \
+    'PermitRootLogin prohibit-password' \
+    'PasswordAuthentication no' \
+    'KbdInteractiveAuthentication no' \
+    'PubkeyAuthentication yes' \
+    'AuthenticationMethods publickey' \
+    'UsePAM no' \
+    > "$ROOTFS/etc/ssh/sshd_config.d/duo-technician.conf" || die 'could not write SSH policy'
+  chmod 0600 "$ROOTFS/etc/ssh/sshd_config.d/duo-technician.conf"
+  verify_ssh_policy || die 'sshd did not apply the required key-only policy'
+  run 'pkill -HUP -x sshd 2>/dev/null || true'
+  echo 'duo-kali: public key installed; SSH is key-only for root'
+}
+
+case "${1:-shell}" in
+  shell) exec "$LAUNCHER" ;;
+  run) shift; run "$@" ;;
+  exec) shift; [ "$#" -gt 0 ] || die "supply a program"; exec "$LAUNCHER" -- "$@" ;;
+  verify)
+    cp "$MODDIR/payload/verify-install.sh" "$ROOTFS/root/verify-install.sh"
+    chmod 0755 "$ROOTFS/root/verify-install.sh"
+    run '/root/verify-install.sh'
+    ;;
+  ssh)
+    case "${2:-status}" in
+      authorize) [ "$#" -eq 3 ] || die 'usage: duo-kali ssh authorize PUBLIC_KEY_FILE'; authorize_key "$3" ;;
+      start) verify_ssh_policy || die 'refusing SSH because key-only policy is not effective'; run 'test -s /root/.ssh/authorized_keys || { echo "No SSH key: run duo-kali ssh authorize PUBLIC_KEY_FILE" >&2; exit 2; }; install -d -m 0755 /run/sshd; pgrep -x sshd >/dev/null || /usr/sbin/sshd; pgrep -a sshd' ;;
+      stop) run 'pkill -x sshd 2>/dev/null || true' ;;
+      status) run 'pgrep -a sshd || true; /usr/sbin/sshd -T 2>/dev/null | grep -Ei "^(permitrootlogin|passwordauthentication|kbdinteractiveauthentication|pubkeyauthentication|usepam) " || true' ;;
+      effective) run 'install -d -m 0755 /run/sshd; ssh-keygen -A >/dev/null 2>&1; /usr/sbin/sshd -T' ;;
+      fingerprint) run 'ssh-keygen -A >/dev/null 2>&1; ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub' ;;
+      *) die "usage: duo-kali ssh {authorize FILE|start|stop|status|effective|fingerprint}" ;;
+    esac
+    ;;
+  kex)
+    case "${2:-status}" in
+      start) run 'command -v kex >/dev/null && kex start || vncserver :1 -geometry 2700x1800 -depth 24' ;;
+      stop) run 'command -v kex >/dev/null && kex stop || vncserver -kill :1' ;;
+      status) run 'pgrep -a Xtigervnc || pgrep -a Xvnc || true' ;;
+      *) die "usage: duo-kali kex {start|stop|status}" ;;
+    esac
+    ;;
+  *) die "usage: duo-kali {shell|run 'COMMAND'|exec PROGRAM [ARG...]|verify|ssh {authorize FILE|start|stop|status|effective|fingerprint}|kex {start|stop|status}}" ;;
+esac

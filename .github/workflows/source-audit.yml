@@ -1,0 +1,71 @@
+name: source-audit
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install audit tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ripgrep
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.x'
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Validate shell syntax
+        run: |
+          find android kernel/scripts kernel/tools kali magisk -type f \
+            \( -name '*.sh' -o -path '*/system/bin/*' \) -print0 |
+            xargs -0 -n1 bash -n
+
+      - name: Check Linux entry points and SSH policy
+        run: bash tests/check-checkout.sh
+
+      - name: Validate PowerShell syntax
+        shell: pwsh
+        run: |
+          $failed = $false
+          Get-ChildItem host -Filter *.ps1 | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName, [ref]$tokens, [ref]$errors)
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error $_.Message }
+              $failed = $true
+            }
+          }
+          if ($failed) { throw 'PowerShell syntax validation failed.' }
+
+      - name: Validate pinned inputs
+        run: |
+          gzip -t kernel/config/stock-duo-p.config.gz
+          python3 -c 'import xml.etree.ElementTree as E; E.parse("kernel/microsoft-manifest/default.xml")'
+
+      - name: Cross-compile Android helpers
+        env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: arm64
+        run: |
+          bash kernel/tools/test-hid-helpers.sh
+          go build -trimpath -o /tmp/injection-selftest kernel/tools/injection-selftest.go
+
+      - name: Build and lint Duo Technician app
+        run: bash android-app/build.sh
+
+      - name: Audit publication contents
+        run: bash kernel/scripts/public-audit.sh

@@ -1,0 +1,34 @@
+#!/system/bin/sh
+
+cat <<'EOF'
+Surface Duo Technician shortcuts
+
+  duo-doctor                         read-only system health report
+  duo-kali shell                     interactive full Kali shell
+  duo-kali run 'COMMAND'             one Kali command
+  duo-kali exec ssh HOST             SSH client with normal argument handling
+  duo-kali verify                    verify the NetHunter installation
+  duo-kali ssh start                 start chroot SSH server
+  duo-kali ssh authorize KEY.pub     install a root key; force key-only SSH
+  duo-kali ssh fingerprint           show the SSH host-key fingerprint
+  duo-kali kex start                 start the KeX desktop
+  duo-wifi monitor CHANNEL           internal WLAN monitor mode
+  duo-wifi test                      authorized injection self-test
+  duo-wifi normal                    return to managed Wi-Fi (may reboot)
+  duo-hid enable 120                 HID keyboard/mouse, restore ADB in 2 min
+  duo-hid type 'TEXT'                type through the HID gadget
+  duo-hid key CTRL+ALT+T             send one named key combination
+  duo-hid mouse move 24 0            move the relative USB pointer
+  duo-hid mouse click left           click a USB mouse button
+  duo-usb enable rndis 300           direct USB network + SSH (Windows)
+  duo-usb enable ecm 300             direct USB network + SSH (Linux/macOS)
+  duo-usb enable acm 60              CDC ACM serial transport
+  duo-usb enable mass 60 IMAGE       read-only file-backed USB disk
+  duo-usb enable midi|uac2 60        USB MIDI or USB Audio Class 2
+  duo-modprobe wifi|bluetooth|sdr    external radio adapter modules
+  duo-modprobe serial|network        USB console/network adapter modules
+  duo-modprobe can                   SocketCAN + common USB CAN adapters
+  duo-modprobe usbip|remote|lab      USB/IP, remote storage, network lab
+
+Run root commands from ADB with: adb shell su -c 'COMMAND'
+EOF

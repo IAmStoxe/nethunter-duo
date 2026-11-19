@@ -1,0 +1,6 @@
+# Copy this file to a private path after running Capture-DuoState.ps1.
+# Use exactly one reviewed package and one evidence-based reason per line:
+# com.vendor.optional.package<TAB>Not used; no protected Duo/Android dependency in package dump
+#
+# This example intentionally has no active package entries. A universal Duo
+# denylist is unsafe; build the real plan from the exact captured device state.

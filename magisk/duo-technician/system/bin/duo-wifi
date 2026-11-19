@@ -1,0 +1,114 @@
+#!/system/bin/sh
+set -u
+
+MODDIR=/data/adb/modules/duo-technician
+WLAN="$MODDIR/payload/wlan-injection.ko"
+SELFTEST="$MODDIR/payload/injection-selftest"
+KALI_LAUNCHER="$MODDIR/payload/startkali.sh"
+KALI_ROOT=/data/local/nhsystem/kali-arm64
+STOCK=/vendor/lib/modules/qca_cld3_wlan.ko
+IW=
+TERMLIB=
+IW_MODE=android
+
+die() { echo "duo-wifi: $*" >&2; exit 1; }
+root_required() { [ "$(id -u)" = 0 ] || die "run with su -c"; }
+have_wlan() { grep -q '^wlan ' /proc/modules 2>/dev/null; }
+find_iw() {
+  local prefix
+  for prefix in /data/data/com.offsec.nhterm/files/usr /data/data/com.termux/files/usr; do
+    if [ -x "$prefix/bin/iw" ]; then
+      IW="$prefix/bin/iw"
+      TERMLIB="$prefix/lib"
+      return 0
+    fi
+  done
+  if [ -x /system/bin/iw ]; then
+    IW=/system/bin/iw
+    TERMLIB=
+    return 0
+  fi
+  if [ -x "$KALI_LAUNCHER" ] && [ -x "$KALI_ROOT/usr/sbin/iw" ]; then
+    IW="$KALI_ROOT/usr/sbin/iw"
+    IW_MODE=kali
+    return 0
+  fi
+  return 1
+}
+iw_run() {
+  if [ "$IW_MODE" = kali ]; then
+    "$KALI_LAUNCHER" -- /usr/sbin/iw "$@"
+  elif [ -n "$TERMLIB" ]; then
+    env LD_LIBRARY_PATH="$TERMLIB" "$IW" "$@"
+  else
+    "$IW" "$@"
+  fi
+}
+
+restore_stock() {
+  echo "duo-wifi: custom module load failed; restoring stock WLAN" >&2
+  have_wlan || insmod "$STOCK" 2>/dev/null
+  svc wifi enable
+}
+
+reboot_to_managed() {
+  echo "duo-wifi: rebooting cleanly to restore managed Wi-Fi"
+  sync
+  reboot
+  exit 0
+}
+
+unload_wlan() {
+  ip link set wlan0 down 2>/dev/null || true
+  have_wlan && rmmod wlan
+}
+
+mode_monitor() {
+  channel="${1:-1}"
+  case "$channel" in *[!0-9]*|'') die "channel must be numeric";; esac
+  [ -r "$WLAN" ] || die "missing $WLAN"
+  [ -x "$IW" ] || die "install iw in the Kali chroot, NetHunter Terminal, or Termux"
+  svc wifi disable
+  sleep 2
+  unload_wlan || { restore_stock; die "could not unload WLAN"; }
+  insmod "$WLAN" con_mode=4 || { restore_stock; die "technician kernel is not active or module load failed"; }
+  n=0
+  while [ ! -d /sys/class/net/wlan0 ] && [ "$n" -lt 20 ]; do sleep 1; n=$((n+1)); done
+  [ -d /sys/class/net/wlan0 ] || { restore_stock; die "monitor interface was not created"; }
+  ip link set wlan0 up || reboot_to_managed
+  iw_run dev wlan0 set channel "$channel" || reboot_to_managed
+  echo "duo-wifi: monitor mode active on channel $channel"
+  iw_run dev
+}
+
+mode_normal() {
+  if [ -x "$IW" ] && iw_run dev wlan0 info 2>/dev/null | grep -q 'type monitor'; then
+    reboot_to_managed
+  fi
+  svc wifi enable
+  echo "duo-wifi: managed Wi-Fi enabled"
+}
+
+status() {
+  uname -r
+  have_wlan || { echo "WLAN module: not loaded"; exit 0; }
+  echo "WLAN module: loaded"
+  if [ -x "$IW" ]; then iw_run dev; else ip link show wlan0 2>/dev/null; fi
+}
+
+selftest() {
+  [ -x "$SELFTEST" ] || die "missing $SELFTEST"
+  [ -x "$IW" ] && iw_run dev wlan0 info
+  "$SELFTEST" wlan0
+  echo "duo-wifi: inspect dmesg for 'Injection frame' confirmation"
+}
+
+root_required
+find_iw || true
+case "${1:-status}" in
+  monitor) mode_monitor "${2:-1}" ;;
+  normal|managed) mode_normal ;;
+  test) selftest ;;
+  status) status ;;
+  *) die "usage: duo-wifi {monitor [channel]|normal|test|status}" ;;
+esac

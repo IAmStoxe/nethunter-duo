@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="doctor"
+        android:enabled="true"
+        android:icon="@drawable/ic_launcher"
+        android:shortcutShortLabel="@string/shortcut_doctor"
+        android:shortcutLongLabel="@string/shortcut_doctor_long">
+        <intent
+            android:action="dev.duotechnician.toolbox.RUN"
+            android:targetPackage="dev.duotechnician.toolbox"
+            android:targetClass="dev.duotechnician.toolbox.MainActivity">
+            <extra android:name="action_id" android:value="doctor" />
+        </intent>
+    </shortcut>
+    <shortcut
+        android:shortcutId="ssh_start"
+        android:enabled="true"
+        android:icon="@drawable/ic_launcher"
+        android:shortcutShortLabel="@string/shortcut_ssh"
+        android:shortcutLongLabel="@string/shortcut_ssh_long">
+        <intent
+            android:action="dev.duotechnician.toolbox.RUN"
+            android:targetPackage="dev.duotechnician.toolbox"
+            android:targetClass="dev.duotechnician.toolbox.MainActivity">
+            <extra android:name="action_id" android:value="ssh_start" />
+        </intent>
+    </shortcut>
+    <shortcut
+        android:shortcutId="terminal"
+        android:enabled="true"
+        android:icon="@drawable/ic_launcher"
+        android:shortcutShortLabel="@string/shortcut_terminal"
+        android:shortcutLongLabel="@string/shortcut_terminal_long">
+        <intent
+            android:action="dev.duotechnician.toolbox.RUN"
+            android:targetPackage="dev.duotechnician.toolbox"
+            android:targetClass="dev.duotechnician.toolbox.MainActivity">
+            <extra android:name="action_id" android:value="terminal" />
+        </intent>
+    </shortcut>
+    <shortcut
+        android:shortcutId="nethunter"
+        android:enabled="true"
+        android:icon="@drawable/ic_launcher"
+        android:shortcutShortLabel="@string/shortcut_nethunter"
+        android:shortcutLongLabel="@string/shortcut_nethunter_long">
+        <intent
+            android:action="dev.duotechnician.toolbox.RUN"
+            android:targetPackage="dev.duotechnician.toolbox"
+            android:targetClass="dev.duotechnician.toolbox.MainActivity">
+            <extra android:name="action_id" android:value="nethunter" />
+        </intent>
+    </shortcut>
+</shortcuts>
+

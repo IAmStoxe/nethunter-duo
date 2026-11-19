@@ -1,0 +1,340 @@
+#!/system/bin/sh
+set -u
+
+# Technician profiles use an isolated g3 gadget. Android's g1 configuration is
+# never modified. The HID helper owns g2, so the two helpers explicitly refuse
+# to run at the same time.
+G1=/config/usb_gadget/g1
+G2=/config/usb_gadget/g2
+G3=/config/usb_gadget/g3
+STATE=/data/local/tmp/duo-usb.udc
+PROFILE_STATE=/data/local/tmp/duo-usb.profile
+SESSION_STATE=/data/local/tmp/duo-usb.session
+ANDROID_CONFIG_STATE=/data/local/tmp/duo-usb.android-config
+TRANSITION_LOG=/data/local/tmp/duo-usb-transition.log
+BB=/data/adb/magisk/busybox
+NETWORK_FUNCTION=
+NETWORK_RULE_PREF=15500
+
+die() { echo "duo-usb: $*" >&2; exit 1; }
+read_udc() { [ -r "$1/UDC" ] && cat "$1/UDC"; }
+
+wait_for_udc() {
+  gadget=$1
+  expected=$2
+  count=0
+  while [ "$(read_udc "$gadget")" != "$expected" ] && [ "$count" -lt 100 ]; do
+    sleep 0.1
+    count=$((count + 1))
+  done
+  [ "$(read_udc "$gadget")" = "$expected" ]
+}
+
+saved_android_config() {
+  config=adb
+  [ ! -r "$ANDROID_CONFIG_STATE" ] || config=$(cat "$ANDROID_CONFIG_STATE")
+  case "$config" in
+    *[!A-Za-z0-9_,.-]*|'') config=adb ;;
+  esac
+  printf '%s\n' "$config"
+}
+
+restore_android_usb() {
+  config=$(saved_android_config)
+  setprop sys.usb.config "$config"
+  wait_for_udc "$G1" "$(cat "$STATE" 2>/dev/null)" || {
+    echo "duo-usb: Android USB restore timed out for config $config" >&2
+    return 1
+  }
+}
+
+[ "$(id -u)" = 0 ] || die "run with su -c"
+
+validate_timeout() {
+  timeout=${1:-60}
+  case "$timeout" in *[!0-9]*|'') die "timeout must be 10-3600 seconds";; esac
+  [ "$timeout" -ge 10 ] && [ "$timeout" -le 3600 ] ||
+    die "timeout must be 10-3600 seconds"
+}
+
+stop_network_services() {
+  ip rule del pref "$NETWORK_RULE_PREF" from 169.254.55.1/32 lookup main 2>/dev/null || true
+  duo-kali run 'if [ -r /run/duo-usb-dnsmasq.pid ]; then kill "$(cat /run/duo-usb-dnsmasq.pid)" 2>/dev/null || true; rm -f /run/duo-usb-dnsmasq.pid /run/duo-usb-dnsmasq.leases; fi' \
+    >/dev/null 2>&1 || true
+}
+
+remove_old_profile() {
+  [ -z "$(read_udc "$G3")" ] || die "g3 is still bound; run duo-usb disable first"
+  [ -L "$G3/os_desc/b.1" ] && rm "$G3/os_desc/b.1"
+  for link in "$G3/configs/b.1"/*; do
+    [ -L "$link" ] && rm "$link"
+  done
+  for function in "$G3/functions"/*; do
+    [ -d "$function" ] || continue
+    if [ -e "$function/lun.0/file" ]; then
+      printf '\n' > "$function/lun.0/file" 2>/dev/null || true
+    fi
+    rmdir "$function" || die "could not remove stale function $function"
+  done
+}
+
+configure_base() {
+  profile=$1
+  pid=$2
+  product=$3
+  [ -d "$G3" ] || mkdir "$G3" || die "could not create g3 gadget"
+  mkdir -p "$G3/strings/0x409" "$G3/configs/b.1/strings/0x409" ||
+    die "could not create g3 descriptor groups"
+  remove_old_profile
+  echo 0x1d6b > "$G3/idVendor"
+  echo "$pid" > "$G3/idProduct"
+  echo 0x0100 > "$G3/bcdDevice"
+  echo 0x0200 > "$G3/bcdUSB"
+  [ ! -e "$G3/max_speed" ] ||
+    echo high-speed > "$G3/max_speed" || die "could not cap g3 at high-speed"
+  echo 0x00 > "$G3/bDeviceClass"
+  echo 0x00 > "$G3/bDeviceSubClass"
+  echo 0x00 > "$G3/bDeviceProtocol"
+  echo SurfaceDuoTechnician > "$G3/strings/0x409/serialnumber"
+  echo 'Surface Duo NetHunter' > "$G3/strings/0x409/manufacturer"
+  echo "$product" > "$G3/strings/0x409/product"
+  echo "$profile" > "$G3/configs/b.1/strings/0x409/configuration"
+  echo 120 > "$G3/configs/b.1/MaxPower"
+  echo "$profile" > "$PROFILE_STATE"
+}
+
+configure_windows_descriptors() {
+  function=$1
+  compatible=$2
+  [ -d "$function/os_desc" ] || return 0
+  for interface in "$function/os_desc"/*; do
+    [ -d "$interface" ] || continue
+    [ -e "$interface/compatible_id" ] && echo "$compatible" > "$interface/compatible_id"
+  done
+  echo 0xcd > "$G3/os_desc/b_vendor_code"
+  echo MSFT100 > "$G3/os_desc/qw_sign"
+  echo 1 > "$G3/os_desc/use"
+  [ -L "$G3/os_desc/b.1" ] || ln -s "$G3/configs/b.1" "$G3/os_desc/b.1"
+}
+
+prepare_network_function() {
+  function=$1
+  echo 02:55:00:00:00:01 > "$function/dev_addr"
+  echo 02:55:00:00:00:02 > "$function/host_addr"
+  NETWORK_FUNCTION=$function
+}
+
+start_network_services() {
+  function=$1
+  ifname=$(cat "$function/ifname")
+  case "$ifname" in
+    *[!A-Za-z0-9_.-]*|'') echo "duo-usb: invalid gadget interface name: $ifname" >&2; return 1 ;;
+  esac
+  # Clear the previous network session before installing this session's
+  # source-specific Android policy rule.
+  stop_network_services
+  # Use the RFC 3927 /16 so hosts that fall back to an automatic link-local
+  # address can still reach the fixed technician address when DHCP is slow or
+  # unavailable.  A /24 here strands Windows APIPA clients outside our subnet.
+  ip addr add 169.254.55.1/16 dev "$ifname" 2>/dev/null || true
+  ip link set "$ifname" up || { echo "duo-usb: could not bring up $ifname" >&2; return 1; }
+  # Android's policy rules do not include a catch-all lookup of the main
+  # routing table.  Scope a temporary rule to replies from our one fixed USB
+  # address; otherwise DHCP works but ICMP and SSH replies are unroutable.
+  ip rule del pref "$NETWORK_RULE_PREF" from 169.254.55.1/32 lookup main 2>/dev/null || true
+  ip rule add pref "$NETWORK_RULE_PREF" from 169.254.55.1/32 lookup main ||
+    { echo "duo-usb: could not install USB reply route" >&2; return 1; }
+
+  if duo-kali run 'command -v dnsmasq >/dev/null' >/dev/null 2>&1; then
+    duo-kali run "dnsmasq --interface=$ifname --bind-interfaces --port=0 --dhcp-authoritative --dhcp-range=169.254.55.10,169.254.55.20,255.255.0.0,10m --dhcp-option=3 --pid-file=/run/duo-usb-dnsmasq.pid --dhcp-leasefile=/run/duo-usb-dnsmasq.leases" ||
+      { echo 'duo-usb: could not start isolated DHCP service' >&2; return 1; }
+  else
+    echo "duo-usb: dnsmasq unavailable; host APIPA or 169.254.55.2/16 will work" >&2
+  fi
+  duo-kali ssh start >/dev/null 2>&1 ||
+    echo "duo-usb: Kali SSH did not start; network transport is still available" >&2
+  echo "duo-usb: device address 169.254.55.1 on $ifname"
+}
+
+configure_profile() {
+  profile=$1
+  backing_file=${2:-}
+  case "$profile" in
+    acm)
+      configure_base acm 0x0105 'Surface Duo Technician Serial'
+      echo 0x02 > "$G3/bDeviceClass"
+      function="$G3/functions/acm.usb0"
+      mkdir "$function"
+      ;;
+    rndis)
+      configure_base rndis 0x0106 'Surface Duo Technician RNDIS'
+      function="$G3/functions/rndis.usb0"
+      mkdir "$function"
+      echo 0xef > "$G3/bDeviceClass"
+      echo 0x02 > "$G3/bDeviceSubClass"
+      echo 0x01 > "$G3/bDeviceProtocol"
+      echo e0 > "$function/class"
+      echo 01 > "$function/subclass"
+      echo 03 > "$function/protocol"
+      configure_windows_descriptors "$function" RNDIS
+      prepare_network_function "$function"
+      ;;
+    ecm)
+      configure_base ecm 0x0107 'Surface Duo Technician ECM'
+      function="$G3/functions/ecm.usb0"
+      mkdir "$function"
+      echo 0xef > "$G3/bDeviceClass"
+      echo 0x02 > "$G3/bDeviceSubClass"
+      echo 0x01 > "$G3/bDeviceProtocol"
+      prepare_network_function "$function"
+      ;;
+    ncm)
+      configure_base ncm 0x0108 'Surface Duo Technician NCM'
+      function="$G3/functions/ncm.usb0"
+      mkdir "$function"
+      echo 0xef > "$G3/bDeviceClass"
+      echo 0x02 > "$G3/bDeviceSubClass"
+      echo 0x01 > "$G3/bDeviceProtocol"
+      configure_windows_descriptors "$function" WINNCM
+      prepare_network_function "$function"
+      ;;
+    eem)
+      configure_base eem 0x0109 'Surface Duo Technician EEM'
+      function="$G3/functions/eem.usb0"
+      mkdir "$function"
+      echo 0xef > "$G3/bDeviceClass"
+      echo 0x02 > "$G3/bDeviceSubClass"
+      echo 0x01 > "$G3/bDeviceProtocol"
+      prepare_network_function "$function"
+      ;;
+    mass)
+      [ -n "$backing_file" ] || die "mass profile requires an absolute image-file path"
+      case "$backing_file" in /*) ;; *) die "mass-storage path must be absolute";; esac
+      case "$backing_file" in /dev/*) die "block devices are forbidden; use a regular image file";; esac
+      [ -f "$backing_file" ] || die "not a regular image file: $backing_file"
+      configure_base mass 0x010a 'Surface Duo Technician Read-Only Disk'
+      function="$G3/functions/mass_storage.usb0"
+      mkdir "$function"
+      echo 1 > "$function/stall"
+      echo 1 > "$function/lun.0/ro"
+      echo 1 > "$function/lun.0/removable"
+      printf '%s\n' "$backing_file" > "$function/lun.0/file"
+      ;;
+    midi)
+      configure_base midi 0x010b 'Surface Duo Technician MIDI'
+      function="$G3/functions/midi.usb0"
+      mkdir "$function"
+      ;;
+    uac2)
+      configure_base uac2 0x010c 'Surface Duo Technician USB Audio'
+      function="$G3/functions/uac2.usb0"
+      mkdir "$function"
+      ;;
+    *) die "profile must be acm, rndis, ecm, ncm, eem, mass, midi, or uac2" ;;
+  esac
+  ln -s "$function" "$G3/configs/b.1/${function##*/}" ||
+    die "could not link $profile function"
+  [ -L "$G3/configs/b.1/${function##*/}" ] ||
+    die "$profile function link is missing"
+  [ ! -e "$G3/max_speed" ] || [ "$(cat "$G3/max_speed")" = high-speed ] ||
+    die "g3 speed cap did not persist"
+}
+
+enable_profile() {
+  profile=${1:-}
+  validate_timeout "${2:-60}"
+  backing_file=${3:-}
+  [ -n "$profile" ] || die "supply a profile"
+  [ -d "$G1" ] || die "Android configfs gadget is unavailable"
+  [ -z "$(read_udc "$G2")" ] || die "HID gadget is active; run duo-hid disable first"
+  [ -z "$(read_udc "$G3")" ] || die "technician gadget is already active"
+
+  configure_profile "$profile" "$backing_file"
+  udc=$(read_udc "$G1")
+  [ -n "$udc" ] || udc=$(ls /sys/class/udc | head -n 1)
+  [ -n "$udc" ] || die "USB device controller unavailable"
+  echo "$udc" > "$STATE"
+  android_config=$(getprop sys.usb.config)
+  case "$android_config" in
+    *[!A-Za-z0-9_,.-]*|'') android_config=adb ;;
+  esac
+  echo "$android_config" > "$ANDROID_CONFIG_STATE"
+  session="$(date +%s)-$$"
+  echo "$session" > "$SESSION_STATE"
+  "$BB" setsid "$0" activate "$profile" "$timeout" "$session" >"$TRANSITION_LOG" 2>&1 </dev/null &
+  echo "duo-usb: $profile activation scheduled; ADB will disconnect"
+  echo "duo-usb: automatic Android/ADB restore in $timeout seconds after activation"
+}
+
+activate_profile() {
+  profile=${1:-}
+  timeout=${2:-}
+  session=${3:-}
+  [ -r "$SESSION_STATE" ] && [ "$(cat "$SESSION_STATE")" = "$session" ] ||
+    die "stale activation request"
+  sleep 1
+  udc=$(cat "$STATE")
+  setprop sys.usb.config none
+  if ! wait_for_udc "$G1" ''; then
+    restore_android_usb || true
+    rm -f "$STATE" "$PROFILE_STATE" "$SESSION_STATE" "$ANDROID_CONFIG_STATE"
+    die "Android USB gadget did not release the controller"
+  fi
+  if ! echo "$udc" > "$G3/UDC"; then
+    stop_network_services
+    restore_android_usb || true
+    rm -f "$STATE" "$PROFILE_STATE" "$SESSION_STATE" "$ANDROID_CONFIG_STATE"
+    die "could not bind technician gadget"
+  fi
+  case "$profile" in
+    rndis|ecm|ncm|eem) NETWORK_FUNCTION="$G3/functions/$profile.usb0" ;;
+    *) NETWORK_FUNCTION= ;;
+  esac
+  if [ -n "$NETWORK_FUNCTION" ] && ! start_network_services "$NETWORK_FUNCTION"; then
+    echo '' > "$G3/UDC" 2>/dev/null || true
+    stop_network_services
+    restore_android_usb || true
+    rm -f "$STATE" "$PROFILE_STATE" "$SESSION_STATE" "$ANDROID_CONFIG_STATE"
+    die "could not initialize $profile network transport"
+  fi
+  "$BB" setsid "$0" watchdog "$timeout" "$session" >/data/local/tmp/duo-usb-watchdog.log 2>&1 </dev/null &
+  sleep 1
+  echo "duo-usb: $profile profile active on $udc at $(cat /sys/class/udc/$udc/current_speed)"
+}
+
+disable_profile() {
+  [ -z "$(read_udc "$G2")" ] || die "HID owns the USB controller; use duo-hid disable"
+  udc=$(read_udc "$G3")
+  [ -n "$udc" ] && echo '' > "$G3/UDC"
+  [ -n "$udc" ] && sleep 1
+  stop_network_services
+  if [ -z "$(read_udc "$G1")" ]; then
+    restore_android_usb || die "could not restore Android gadget"
+  fi
+  rm -f "$STATE" "$PROFILE_STATE" "$SESSION_STATE" "$ANDROID_CONFIG_STATE"
+  echo "duo-usb: Android ADB gadget restored"
+}
+
+status() {
+  echo "Android UDC: $(read_udc "$G1")"
+  echo "HID UDC:     $(read_udc "$G2")"
+  echo "Utility UDC: $(read_udc "$G3")"
+  [ -r "$PROFILE_STATE" ] && echo "Profile:     $(cat "$PROFILE_STATE")"
+  [ -d "$G3/functions" ] && ls -1 "$G3/functions" 2>/dev/null || true
+}
+
+case "${1:-status}" in
+  enable) enable_profile "${2:-}" "${3:-60}" "${4:-}" ;;
+  activate) activate_profile "${2:-}" "${3:-}" "${4:-}" ;;
+  disable) disable_profile ;;
+  watchdog)
+    sleep "${2:-60}"
+    [ -r "$SESSION_STATE" ] || exit 0
+    [ "$(cat "$SESSION_STATE")" = "${3:-}" ] || exit 0
+    disable_profile
+    ;;
+  status) status ;;
+  profiles) echo 'acm rndis ecm ncm eem mass midi uac2' ;;
+  *) die "usage: duo-usb {enable PROFILE [10-3600] [MASS_IMAGE]|disable|status|profiles}" ;;
+esac
+

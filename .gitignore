@@ -1,0 +1,54 @@
+# Private/local device material
+images/
+restore/
+windows/
+usb_driver/
+
+# Downloaded applications, root filesystems, and proprietary utilities
+apps/*.apk
+kali/*.tar
+kali/*.tar.*
+tools/*.apk
+tools/*.tar
+tools/*.7z
+tools/parted
+tools/fastboot_driver_64/
+tools/libwdi-x64/
+
+# Generated kernel and Magisk artifacts
+kernel/artifacts/
+*.img
+*.ko
+*.tgz
+*.zip
+magisk/duo-technician/payload/build-info
+magisk/duo-technician/payload/modules.dep
+magisk/duo-technician/payload/modules.sha256
+magisk/duo-technician/payload/hid-type
+magisk/duo-technician/payload/injection-selftest
+magisk/duo-technician/payload/startkali.sh
+magisk/duo-technician/payload/verify-install.sh
+
+# Build/cache trees
+.work/
+.cache/
+out/
+dist/
+ccache/
+android-app/.gradle/
+android-app/app/build/
+android-app/dist/
+
+# Local notes, logs, and captures
+LOCAL_*.md
+*.log
+*.png
+!/docs/assets/nethunter-duo.png
+*.pcap
+*.pcapng
+
+# Editor/OS files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

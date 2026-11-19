@@ -1,0 +1,185 @@
+#!/system/bin/sh
+set -u
+
+# HID uses the spare g2 gadget. Android's Microsoft ADB PID is not a valid
+# Windows composite parent, so appending HID to g1 breaks ADB binding.
+G1=/config/usb_gadget/g1
+G2=/config/usb_gadget/g2
+F="$G2/functions/hid.keyboard"
+L="$G2/configs/b.1/hid.keyboard"
+MF="$G2/functions/hid.mouse"
+ML="$G2/configs/b.1/hid.mouse"
+TYPER=/data/adb/modules/duo-technician/payload/hid-type
+POINTER=/data/adb/modules/duo-technician/payload/hid-pointer
+DESC=BQEJBqEBBQcZ4CnnFQAlAXUBlQiBApUBdQiBAZUFdQEFCBkBKQWRApUBdQORAZUGdQgVACVlBQcZACllgQDA
+MOUSE_DESC=BQEJAqEBCQGhAAUJGQEpAxUAJQGVA3UBgQKVAXUFgQEFAQkwCTEJOBWBJX91CJUDgQbAwA==
+STATE=/data/local/tmp/duo-hid.udc
+SESSION=/data/local/tmp/duo-hid.session
+ANDROID_CONFIG_STATE=/data/local/tmp/duo-hid.android-config
+TRANSITION_LOG=/data/local/tmp/duo-hid-transition.log
+BB=/data/adb/magisk/busybox
+
+die() { echo "duo-hid: $*" >&2; exit 1; }
+[ "$(id -u)" = 0 ] || die "run with su -c"
+
+read_udc() { [ -r "$1/UDC" ] && cat "$1/UDC"; }
+
+wait_for_udc() {
+  gadget=$1
+  expected=$2
+  count=0
+  while [ "$(read_udc "$gadget")" != "$expected" ] && [ "$count" -lt 100 ]; do
+    sleep 0.1
+    count=$((count + 1))
+  done
+  [ "$(read_udc "$gadget")" = "$expected" ]
+}
+
+saved_android_config() {
+  config=adb
+  [ ! -r "$ANDROID_CONFIG_STATE" ] || config=$(cat "$ANDROID_CONFIG_STATE")
+  case "$config" in
+    *[!A-Za-z0-9_,.-]*|'') config=adb ;;
+  esac
+  printf '%s\n' "$config"
+}
+
+restore_android_usb() {
+  config=$(saved_android_config)
+  setprop sys.usb.config "$config"
+  wait_for_udc "$G1" "$(cat "$STATE" 2>/dev/null)" || {
+    echo "duo-hid: Android USB restore timed out for config $config" >&2
+    return 1
+  }
+}
+
+setup_g2() {
+  [ -d "$G2" ] || mkdir "$G2" || return 1
+  if [ -L "$L" ]; then
+    rm "$L" || return 1
+  fi
+  if [ -L "$ML" ]; then
+    rm "$ML" || return 1
+  fi
+  mkdir -p "$G2/strings/0x409" "$G2/configs/b.1/strings/0x409" "$F" "$MF" || return 1
+  echo 0x1d6b > "$G2/idVendor"
+  echo 0x0104 > "$G2/idProduct"
+  echo 0x0100 > "$G2/bcdDevice"
+  echo 0x0200 > "$G2/bcdUSB"
+  echo SurfaceDuoTechnician > "$G2/strings/0x409/serialnumber"
+  echo 'Surface Duo NetHunter' > "$G2/strings/0x409/manufacturer"
+  echo 'Surface Duo Technician Keyboard and Mouse' > "$G2/strings/0x409/product"
+  echo 'HID keyboard and mouse' > "$G2/configs/b.1/strings/0x409/configuration"
+  echo 120 > "$G2/configs/b.1/MaxPower"
+  echo 1 > "$F/protocol"
+  echo 1 > "$F/subclass"
+  echo 8 > "$F/report_length"
+  descriptor=$(mktemp /data/local/tmp/duo-hid-desc.XXXXXX) || return 1
+  if ! printf '%s' "$DESC" | base64 -d > "$descriptor" ||
+     ! dd if="$descriptor" bs=63 count=1 > "$F/report_desc" 2>/dev/null ||
+     ! cmp -s "$descriptor" "$F/report_desc"; then
+    rm -f "$descriptor"
+    return 1
+  fi
+  rm -f "$descriptor"
+  echo 2 > "$MF/protocol"
+  echo 1 > "$MF/subclass"
+  echo 4 > "$MF/report_length"
+  descriptor=$(mktemp /data/local/tmp/duo-mouse-desc.XXXXXX) || return 1
+  if ! printf '%s' "$MOUSE_DESC" | base64 -d > "$descriptor" ||
+     ! dd if="$descriptor" bs=52 count=1 > "$MF/report_desc" 2>/dev/null ||
+     ! cmp -s "$descriptor" "$MF/report_desc"; then
+    rm -f "$descriptor"
+    return 1
+  fi
+  rm -f "$descriptor"
+  [ -L "$L" ] || ln -s "$F" "$L"
+  [ -L "$ML" ] || ln -s "$MF" "$ML"
+}
+
+enable_hid() {
+  timeout="${1:-0}"
+  case "$timeout" in *[!0-9]*|'') die "timeout must be seconds or 0";; esac
+  [ -d "$G1" ] || die "configfs gadget subsystem unavailable"
+  for gadget in /config/usb_gadget/*; do
+    [ "$gadget" = "$G1" ] || [ "$gadget" = "$G2" ] || {
+      [ -r "$gadget/UDC" ] && [ -n "$(cat "$gadget/UDC")" ] &&
+        die "another utility gadget is active: $gadget"
+    }
+  done
+  [ -z "$(cat "$G2/UDC")" ] || { echo "duo-hid: already enabled"; exit 0; }
+  setup_g2 || die "could not configure isolated HID gadget"
+  udc="$(cat "$G1/UDC")"
+  [ -n "$udc" ] || udc="$(ls /sys/class/udc | head -n 1)"
+  [ -n "$udc" ] || die "USB device controller unavailable"
+  echo "$udc" > "$STATE"
+  android_config=$(getprop sys.usb.config)
+  case "$android_config" in
+    *[!A-Za-z0-9_,.-]*|'') android_config=adb ;;
+  esac
+  echo "$android_config" > "$ANDROID_CONFIG_STATE"
+  session="$(date +%s)-$$"
+  echo "$session" > "$SESSION"
+  "$BB" setsid "$0" activate "$timeout" "$session" >"$TRANSITION_LOG" 2>&1 </dev/null &
+  echo "duo-hid: keyboard and mouse activation scheduled; ADB will disconnect"
+  [ "$timeout" -gt 0 ] && echo "duo-hid: automatic Android/ADB restore in $timeout seconds after activation"
+}
+
+activate_hid() {
+  timeout=${1:-0}
+  session=${2:-}
+  [ -r "$SESSION" ] && [ "$(cat "$SESSION")" = "$session" ] ||
+    die "stale activation request"
+  sleep 1
+  udc=$(cat "$STATE")
+  setprop sys.usb.config none
+  if ! wait_for_udc "$G1" ''; then
+    restore_android_usb || true
+    rm -f "$STATE" "$SESSION" "$ANDROID_CONFIG_STATE"
+    die "Android USB gadget did not release the controller"
+  fi
+  echo "$udc" > "$G2/UDC" || {
+    restore_android_usb || true
+    rm -f "$STATE" "$SESSION" "$ANDROID_CONFIG_STATE"
+    die "could not bind HID gadget"
+  }
+  if [ "$timeout" -gt 0 ]; then
+    "$BB" setsid "$0" watchdog "$timeout" "$session" >/data/local/tmp/duo-hid-watchdog.log 2>&1 </dev/null &
+  fi
+  sleep 1
+  echo "duo-hid: keyboard and mouse active on $udc at $(cat /sys/class/udc/$udc/current_speed)"
+}
+
+disable_hid() {
+  for gadget in /config/usb_gadget/*; do
+    [ "$gadget" = "$G1" ] || [ "$gadget" = "$G2" ] || {
+      [ -r "$gadget/UDC" ] && [ -n "$(cat "$gadget/UDC")" ] &&
+        die "another utility gadget owns the controller: $gadget"
+    }
+  done
+  udc="$(cat "$G2/UDC")"
+  [ -n "$udc" ] && echo '' > "$G2/UDC"
+  [ -n "$udc" ] && sleep 1
+  if [ -z "$(read_udc "$G1")" ]; then
+    restore_android_usb || die "could not restore Android gadget"
+  fi
+  rm -f "$STATE" "$SESSION" "$ANDROID_CONFIG_STATE"
+  echo "duo-hid: Android ADB gadget restored"
+}
+
+case "${1:-status}" in
+  enable) enable_hid "${2:-0}" ;;
+  activate) activate_hid "${2:-0}" "${3:-}" ;;
+  disable) disable_hid ;;
+  watchdog)
+    sleep "${2:-30}"
+    [ -r "$SESSION" ] || exit 0
+    [ "$(cat "$SESSION")" = "${3:-}" ] || exit 0
+    disable_hid
+    ;;
+  status) echo "Android UDC: $(cat "$G1/UDC")"; echo "HID UDC: $(cat "$G2/UDC")"; ls -l /dev/hidg* 2>/dev/null || true ;;
+  type) shift; [ "$#" -gt 0 ] || die "usage: duo-hid type TEXT"; [ -x "$TYPER" ] || die "missing $TYPER"; "$TYPER" "$@" ;;
+  key) shift; [ "$#" -eq 1 ] || die "usage: duo-hid key CTRL+ALT+T"; [ -x "$TYPER" ] || die "missing $TYPER"; "$TYPER" --key "$1" ;;
+  mouse) shift; [ "$#" -gt 0 ] || die "usage: duo-hid mouse {move DX DY|click BUTTON|scroll DELTA}"; [ -x "$POINTER" ] || die "missing $POINTER"; "$POINTER" "$@" ;;
+  *) die "usage: duo-hid {enable [seconds]|disable|status|type TEXT|key COMBO|mouse COMMAND}" ;;
+esac

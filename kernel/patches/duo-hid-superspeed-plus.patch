@@ -1,0 +1,7 @@
+--- a/drivers/usb/gadget/function/f_hid.c
++++ b/drivers/usb/gadget/function/f_hid.c
+@@ -814,2 +814,3 @@
+ 	status = usb_assign_descriptors(f, hidg_fs_descriptors,
+-			hidg_hs_descriptors, hidg_ss_descriptors, NULL);
++			hidg_hs_descriptors, hidg_ss_descriptors,
++			hidg_ss_descriptors);

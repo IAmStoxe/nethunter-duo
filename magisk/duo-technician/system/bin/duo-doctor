@@ -1,0 +1,45 @@
+#!/system/bin/sh
+set -u
+
+MODDIR=/data/adb/modules/duo-technician
+ROOTFS=/data/local/nhsystem/kali-arm64
+
+section() { printf '\n== %s ==\n' "$1"; }
+
+section 'Kernel and Android'
+uname -a
+getprop ro.build.version.incremental
+getprop ro.boot.slot_suffix
+printf 'SELinux: '; getenforce 2>/dev/null || true
+
+section 'Toolkit build'
+cat "$MODDIR/payload/build-info" 2>/dev/null || echo 'build metadata missing'
+if duo-modprobe verify >/dev/null 2>&1; then
+  echo 'Payload hashes: verified'
+else
+  echo 'Payload hashes: FAILED'
+fi
+duo-modprobe status 2>/dev/null || true
+
+section 'Network and WLAN'
+ip -brief link 2>/dev/null || ip link
+duo-wifi status 2>/dev/null || true
+
+section 'USB gadget and HID'
+duo-hid status 2>/dev/null || true
+duo-usb status 2>/dev/null || true
+
+section 'Kali'
+if [ -x "$ROOTFS/bin/bash" ]; then
+  du -sh "$ROOTFS" 2>/dev/null || true
+  duo-kali run 'dpkg --audit; printf "Kali: "; dpkg-query -W -f="\${Version}\n" kali-nethunter-full 2>/dev/null' 2>/dev/null || true
+else
+  echo 'Kali rootfs missing'
+fi
+
+section 'Android hardware services'
+service list 2>/dev/null | grep -Ei 'audio|camera|bluetooth|wifi' | head -40 || true
+
+section 'Power and storage'
+dumpsys battery 2>/dev/null | grep -E 'level:|status:|powered:' || true
+df -h /data 2>/dev/null || df /data

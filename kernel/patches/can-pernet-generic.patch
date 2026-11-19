@@ -1,0 +1,569 @@
+diff --git a/include/net/net_namespace.h b/include/net/net_namespace.h
+index d96c9d9cc..ae073561e 100644
+--- a/include/net/net_namespace.h
++++ b/include/net/net_namespace.h
+@@ -146,9 +146,6 @@ struct net {
+ #endif
+ #if IS_ENABLED(CONFIG_MPLS)
+ 	struct netns_mpls	mpls;
+-#endif
+-#if IS_ENABLED(CONFIG_CAN)
+-	struct netns_can	can;
+ #endif
+ 	struct sock		*diag_nlsk;
+ 	atomic_t		fnhe_genid;
+diff --git a/include/net/netns/can.h b/include/net/netns/can.h
+index ecf238b88..66b534afe 100644
+--- a/include/net/netns/can.h
++++ b/include/net/netns/can.h
+@@ -38,4 +38,7 @@ struct netns_can {
+ 	struct hlist_head cgw_list;
+ };
+ 
++struct net;
++struct netns_can *can_pernet(struct net *net);
++
+ #endif /* __NETNS_CAN_H__ */
+diff --git a/net/can/af_can.c b/net/can/af_can.c
+index 46c85731d..49587cb88 100644
+--- a/net/can/af_can.c
++++ b/net/can/af_can.c
+@@ -60,6 +60,7 @@
+ #include <linux/can/skb.h>
+ #include <linux/ratelimit.h>
+ #include <net/net_namespace.h>
++#include <net/netns/generic.h>
+ #include <net/sock.h>
+ 
+ #include "af_can.h"
+@@ -76,6 +77,13 @@ module_param(stats_timer, int, S_IRUGO);
+ MODULE_PARM_DESC(stats_timer, "enable timer for statistics (default:on)");
+ 
+ static struct kmem_cache *rcv_cache __read_mostly;
++static unsigned int can_net_id;
++
++struct netns_can *can_pernet(struct net *net)
++{
++	return net_generic(net, can_net_id);
++}
++EXPORT_SYMBOL(can_pernet);
+ 
+ /* table of registered CAN protocols */
+ static const struct can_proto __rcu *proto_tab[CAN_NPROTO] __read_mostly;
+@@ -218,7 +226,7 @@ int can_send(struct sk_buff *skb, int loop)
+ {
+ 	struct sk_buff *newskb = NULL;
+ 	struct canfd_frame *cfd = (struct canfd_frame *)skb->data;
+-	struct s_stats *can_stats = dev_net(skb->dev)->can.can_stats;
++	struct s_stats *can_stats = can_pernet(dev_net(skb->dev))->can_stats;
+ 	int err = -EINVAL;
+ 
+ 	if (skb->len == CAN_MTU) {
+@@ -326,7 +334,7 @@ static struct dev_rcv_lists *find_dev_rcv_lists(struct net *net,
+ 						struct net_device *dev)
+ {
+ 	if (!dev)
+-		return net->can.can_rx_alldev_list;
++		return can_pernet(net)->can_rx_alldev_list;
+ 	else
+ 		return (struct dev_rcv_lists *)dev->ml_priv;
+ }
+@@ -466,7 +474,7 @@ int can_rx_register(struct net *net, struct net_device *dev, canid_t can_id,
+ 	struct receiver *r;
+ 	struct hlist_head *rl;
+ 	struct dev_rcv_lists *d;
+-	struct s_pstats *can_pstats = net->can.can_pstats;
++	struct s_pstats *can_pstats = can_pernet(net)->can_pstats;
+ 	int err = 0;
+ 
+ 	/* insert new receiver  (dev,canid,mask) -> (func,data) */
+@@ -481,7 +489,7 @@ int can_rx_register(struct net *net, struct net_device *dev, canid_t can_id,
+ 	if (!r)
+ 		return -ENOMEM;
+ 
+-	spin_lock(&net->can.can_rcvlists_lock);
++	spin_lock(&can_pernet(net)->can_rcvlists_lock);
+ 
+ 	d = find_dev_rcv_lists(net, dev);
+ 	if (d) {
+@@ -506,7 +514,7 @@ int can_rx_register(struct net *net, struct net_device *dev, canid_t can_id,
+ 		err = -ENODEV;
+ 	}
+ 
+-	spin_unlock(&net->can.can_rcvlists_lock);
++	spin_unlock(&can_pernet(net)->can_rcvlists_lock);
+ 
+ 	return err;
+ }
+@@ -542,7 +550,7 @@ void can_rx_unregister(struct net *net, struct net_device *dev, canid_t can_id,
+ {
+ 	struct receiver *r = NULL;
+ 	struct hlist_head *rl;
+-	struct s_pstats *can_pstats = net->can.can_pstats;
++	struct s_pstats *can_pstats = can_pernet(net)->can_pstats;
+ 	struct dev_rcv_lists *d;
+ 
+ 	if (dev && dev->type != ARPHRD_CAN)
+@@ -551,7 +559,7 @@ void can_rx_unregister(struct net *net, struct net_device *dev, canid_t can_id,
+ 	if (dev && !net_eq(net, dev_net(dev)))
+ 		return;
+ 
+-	spin_lock(&net->can.can_rcvlists_lock);
++	spin_lock(&can_pernet(net)->can_rcvlists_lock);
+ 
+ 	d = find_dev_rcv_lists(net, dev);
+ 	if (!d) {
+@@ -599,7 +607,7 @@ void can_rx_unregister(struct net *net, struct net_device *dev, canid_t can_id,
+ 	}
+ 
+  out:
+-	spin_unlock(&net->can.can_rcvlists_lock);
++	spin_unlock(&can_pernet(net)->can_rcvlists_lock);
+ 
+ 	/* schedule the receiver item for deletion */
+ 	if (r) {
+@@ -685,7 +693,7 @@ static void can_receive(struct sk_buff *skb, struct net_device *dev)
+ {
+ 	struct dev_rcv_lists *d;
+ 	struct net *net = dev_net(dev);
+-	struct s_stats *can_stats = net->can.can_stats;
++	struct s_stats *can_stats = can_pernet(net)->can_stats;
+ 	int matches;
+ 
+ 	/* update statistics */
+@@ -699,7 +707,7 @@ static void can_receive(struct sk_buff *skb, struct net_device *dev)
+ 	rcu_read_lock();
+ 
+ 	/* deliver the packet to sockets listening on all devices */
+-	matches = can_rcv_filter(net->can.can_rx_alldev_list, skb);
++	matches = can_rcv_filter(can_pernet(net)->can_rx_alldev_list, skb);
+ 
+ 	/* find receive list for this device */
+ 	d = find_dev_rcv_lists(net, dev);
+@@ -841,7 +849,7 @@ static int can_notifier(struct notifier_block *nb, unsigned long msg,
+ 		break;
+ 
+ 	case NETDEV_UNREGISTER:
+-		spin_lock(&dev_net(dev)->can.can_rcvlists_lock);
++		spin_lock(&can_pernet(dev_net(dev))->can_rcvlists_lock);
+ 
+ 		d = dev->ml_priv;
+ 		if (d) {
+@@ -855,7 +863,7 @@ static int can_notifier(struct notifier_block *nb, unsigned long msg,
+ 			pr_err("can: notifier: receive list not found for dev "
+ 			       "%s\n", dev->name);
+ 
+-		spin_unlock(&dev_net(dev)->can.can_rcvlists_lock);
++		spin_unlock(&can_pernet(dev_net(dev))->can_rcvlists_lock);
+ 
+ 		break;
+ 	}
+@@ -865,36 +873,36 @@ static int can_notifier(struct notifier_block *nb, unsigned long msg,
+ 
+ static int can_pernet_init(struct net *net)
+ {
+-	spin_lock_init(&net->can.can_rcvlists_lock);
+-	net->can.can_rx_alldev_list =
++	spin_lock_init(&can_pernet(net)->can_rcvlists_lock);
++	can_pernet(net)->can_rx_alldev_list =
+ 		kzalloc(sizeof(struct dev_rcv_lists), GFP_KERNEL);
+-	if (!net->can.can_rx_alldev_list)
++	if (!can_pernet(net)->can_rx_alldev_list)
+ 		goto out;
+-	net->can.can_stats = kzalloc(sizeof(struct s_stats), GFP_KERNEL);
+-	if (!net->can.can_stats)
++	can_pernet(net)->can_stats = kzalloc(sizeof(struct s_stats), GFP_KERNEL);
++	if (!can_pernet(net)->can_stats)
+ 		goto out_free_alldev_list;
+-	net->can.can_pstats = kzalloc(sizeof(struct s_pstats), GFP_KERNEL);
+-	if (!net->can.can_pstats)
++	can_pernet(net)->can_pstats = kzalloc(sizeof(struct s_pstats), GFP_KERNEL);
++	if (!can_pernet(net)->can_pstats)
+ 		goto out_free_can_stats;
+ 
+ 	if (IS_ENABLED(CONFIG_PROC_FS)) {
+ 		/* the statistics are updated every second (timer triggered) */
+ 		if (stats_timer) {
+-			setup_timer(&net->can.can_stattimer, can_stat_update,
++			setup_timer(&can_pernet(net)->can_stattimer, can_stat_update,
+ 				    (unsigned long)net);
+-			mod_timer(&net->can.can_stattimer,
++			mod_timer(&can_pernet(net)->can_stattimer,
+ 				  round_jiffies(jiffies + HZ));
+ 		}
+-		net->can.can_stats->jiffies_init = jiffies;
++		can_pernet(net)->can_stats->jiffies_init = jiffies;
+ 		can_init_proc(net);
+ 	}
+ 
+ 	return 0;
+ 
+  out_free_can_stats:
+-	kfree(net->can.can_stats);
++	kfree(can_pernet(net)->can_stats);
+  out_free_alldev_list:
+-	kfree(net->can.can_rx_alldev_list);
++	kfree(can_pernet(net)->can_rx_alldev_list);
+  out:
+ 	return -ENOMEM;
+ }
+@@ -906,7 +914,7 @@ static void can_pernet_exit(struct net *net)
+ 	if (IS_ENABLED(CONFIG_PROC_FS)) {
+ 		can_remove_proc(net);
+ 		if (stats_timer)
+-			del_timer_sync(&net->can.can_stattimer);
++			del_timer_sync(&can_pernet(net)->can_stattimer);
+ 	}
+ 
+ 	/* remove created dev_rcv_lists from still registered CAN devices */
+@@ -922,9 +930,9 @@ static void can_pernet_exit(struct net *net)
+ 	}
+ 	rcu_read_unlock();
+ 
+-	kfree(net->can.can_rx_alldev_list);
+-	kfree(net->can.can_stats);
+-	kfree(net->can.can_pstats);
++	kfree(can_pernet(net)->can_rx_alldev_list);
++	kfree(can_pernet(net)->can_stats);
++	kfree(can_pernet(net)->can_pstats);
+ }
+ 
+ /*
+@@ -955,6 +963,8 @@ static struct notifier_block can_netdev_notifier __read_mostly = {
+ static struct pernet_operations can_pernet_ops __read_mostly = {
+ 	.init = can_pernet_init,
+ 	.exit = can_pernet_exit,
++	.id = &can_net_id,
++	.size = sizeof(struct netns_can),
+ };
+ 
+ static __init int can_init(void)
+diff --git a/net/can/bcm.c b/net/can/bcm.c
+index 12d851c46..e3c7820c7 100644
+--- a/net/can/bcm.c
++++ b/net/can/bcm.c
+@@ -1569,8 +1569,8 @@ static int bcm_release(struct socket *sock)
+ 
+ #if IS_ENABLED(CONFIG_PROC_FS)
+ 	/* remove procfs entry */
+-	if (net->can.bcmproc_dir && bo->bcm_proc_read)
+-		remove_proc_entry(bo->procname, net->can.bcmproc_dir);
++	if (can_pernet(net)->bcmproc_dir && bo->bcm_proc_read)
++		remove_proc_entry(bo->procname, can_pernet(net)->bcmproc_dir);
+ #endif /* CONFIG_PROC_FS */
+ 
+ 	/* remove device reference */
+@@ -1631,11 +1631,11 @@ static int bcm_connect(struct socket *sock, struct sockaddr *uaddr, int len,
+ 	}
+ 
+ #if IS_ENABLED(CONFIG_PROC_FS)
+-	if (net->can.bcmproc_dir) {
++	if (can_pernet(net)->bcmproc_dir) {
+ 		/* unique socket address as filename */
+ 		sprintf(bo->procname, "%lu", sock_i_ino(sk));
+ 		bo->bcm_proc_read = proc_create_data(bo->procname, 0644,
+-						     net->can.bcmproc_dir,
++						     can_pernet(net)->bcmproc_dir,
+ 						     &bcm_proc_fops, sk);
+ 		if (!bo->bcm_proc_read) {
+ 			ret = -ENOMEM;
+@@ -1727,7 +1727,7 @@ static int canbcm_pernet_init(struct net *net)
+ {
+ #if IS_ENABLED(CONFIG_PROC_FS)
+ 	/* create /proc/net/can-bcm directory */
+-	net->can.bcmproc_dir = proc_net_mkdir(net, "can-bcm", net->proc_net);
++	can_pernet(net)->bcmproc_dir = proc_net_mkdir(net, "can-bcm", net->proc_net);
+ #endif /* CONFIG_PROC_FS */
+ 
+ 	return 0;
+@@ -1737,7 +1737,7 @@ static void canbcm_pernet_exit(struct net *net)
+ {
+ #if IS_ENABLED(CONFIG_PROC_FS)
+ 	/* remove /proc/net/can-bcm directory */
+-	if (net->can.bcmproc_dir)
++	if (can_pernet(net)->bcmproc_dir)
+ 		remove_proc_entry("can-bcm", net->proc_net);
+ #endif /* CONFIG_PROC_FS */
+ }
+diff --git a/net/can/gw.c b/net/can/gw.c
+index 5114b8f07..fb91002e3 100644
+--- a/net/can/gw.c
++++ b/net/can/gw.c
+@@ -489,7 +489,7 @@ static int cgw_notifier(struct notifier_block *nb,
+ 
+ 		ASSERT_RTNL();
+ 
+-		hlist_for_each_entry_safe(gwj, nx, &net->can.cgw_list, list) {
++		hlist_for_each_entry_safe(gwj, nx, &can_pernet(net)->cgw_list, list) {
+ 
+ 			if (gwj->src.dev == dev || gwj->dst.dev == dev) {
+ 				hlist_del(&gwj->list);
+@@ -619,7 +619,7 @@ static int cgw_dump_jobs(struct sk_buff *skb, struct netlink_callback *cb)
+ 	int s_idx = cb->args[0];
+ 
+ 	rcu_read_lock();
+-	hlist_for_each_entry_rcu(gwj, &net->can.cgw_list, list) {
++	hlist_for_each_entry_rcu(gwj, &can_pernet(net)->cgw_list, list) {
+ 		if (idx < s_idx)
+ 			goto cont;
+ 
+@@ -865,7 +865,7 @@ static int cgw_create_job(struct sk_buff *skb,  struct nlmsghdr *nlh,
+ 		ASSERT_RTNL();
+ 
+ 		/* check for updating an existing job with identical uid */
+-		hlist_for_each_entry(gwj, &net->can.cgw_list, list) {
++		hlist_for_each_entry(gwj, &can_pernet(net)->cgw_list, list) {
+ 
+ 			if (gwj->mod.uid != mod.uid)
+ 				continue;
+@@ -923,7 +923,7 @@ static int cgw_create_job(struct sk_buff *skb,  struct nlmsghdr *nlh,
+ 
+ 	err = cgw_register_filter(net, gwj);
+ 	if (!err)
+-		hlist_add_head_rcu(&gwj->list, &net->can.cgw_list);
++		hlist_add_head_rcu(&gwj->list, &can_pernet(net)->cgw_list);
+ out:
+ 	if (err)
+ 		kmem_cache_free(cgw_cache, gwj);
+@@ -938,7 +938,7 @@ static void cgw_remove_all_jobs(struct net *net)
+ 
+ 	ASSERT_RTNL();
+ 
+-	hlist_for_each_entry_safe(gwj, nx, &net->can.cgw_list, list) {
++	hlist_for_each_entry_safe(gwj, nx, &can_pernet(net)->cgw_list, list) {
+ 		hlist_del(&gwj->list);
+ 		cgw_unregister_filter(net, gwj);
+ 		kmem_cache_free(cgw_cache, gwj);
+@@ -986,7 +986,7 @@ static int cgw_remove_job(struct sk_buff *skb, struct nlmsghdr *nlh,
+ 	ASSERT_RTNL();
+ 
+ 	/* remove only the first matching entry */
+-	hlist_for_each_entry_safe(gwj, nx, &net->can.cgw_list, list) {
++	hlist_for_each_entry_safe(gwj, nx, &can_pernet(net)->cgw_list, list) {
+ 
+ 		if (gwj->flags != r->flags)
+ 			continue;
+@@ -1020,7 +1020,7 @@ static int cgw_remove_job(struct sk_buff *skb, struct nlmsghdr *nlh,
+ 
+ static int __net_init cangw_pernet_init(struct net *net)
+ {
+-	INIT_HLIST_HEAD(&net->can.cgw_list);
++	INIT_HLIST_HEAD(&can_pernet(net)->cgw_list);
+ 	return 0;
+ }
+ 
+diff --git a/net/can/proc.c b/net/can/proc.c
+index 83045f00c..34541e850 100644
+--- a/net/can/proc.c
++++ b/net/can/proc.c
+@@ -77,8 +77,8 @@ static const char rx_list_name[][8] = {
+ 
+ static void can_init_stats(struct net *net)
+ {
+-	struct s_stats *can_stats = net->can.can_stats;
+-	struct s_pstats *can_pstats = net->can.can_pstats;
++	struct s_stats *can_stats = can_pernet(net)->can_stats;
++	struct s_pstats *can_pstats = can_pernet(net)->can_pstats;
+ 	/*
+ 	 * This memset function is called from a timer context (when
+ 	 * can_stattimer is active which is the default) OR in a process
+@@ -118,7 +118,7 @@ static unsigned long calc_rate(unsigned long oldjif, unsigned long newjif,
+ void can_stat_update(unsigned long data)
+ {
+ 	struct net *net = (struct net *)data;
+-	struct s_stats *can_stats = net->can.can_stats;
++	struct s_stats *can_stats = can_pernet(net)->can_stats;
+ 	unsigned long j = jiffies; /* snapshot */
+ 
+ 	/* restart counting in timer context on user request */
+@@ -176,7 +176,7 @@ void can_stat_update(unsigned long data)
+ 	can_stats->matches_delta   = 0;
+ 
+ 	/* restart timer (one second) */
+-	mod_timer(&net->can.can_stattimer, round_jiffies(jiffies + HZ));
++	mod_timer(&can_pernet(net)->can_stattimer, round_jiffies(jiffies + HZ));
+ }
+ 
+ /*
+@@ -211,8 +211,8 @@ static void can_print_recv_banner(struct seq_file *m)
+ static int can_stats_proc_show(struct seq_file *m, void *v)
+ {
+ 	struct net *net = m->private;
+-	struct s_stats *can_stats = net->can.can_stats;
+-	struct s_pstats *can_pstats = net->can.can_pstats;
++	struct s_stats *can_stats = can_pernet(net)->can_stats;
++	struct s_pstats *can_pstats = can_pernet(net)->can_pstats;
+ 
+ 	seq_putc(m, '\n');
+ 	seq_printf(m, " %8ld transmitted frames (TXF)\n", can_stats->tx_frames);
+@@ -221,7 +221,7 @@ static int can_stats_proc_show(struct seq_file *m, void *v)
+ 
+ 	seq_putc(m, '\n');
+ 
+-	if (net->can.can_stattimer.function == can_stat_update) {
++	if (can_pernet(net)->can_stattimer.function == can_stat_update) {
+ 		seq_printf(m, " %8ld %% total match ratio (RXMR)\n",
+ 				can_stats->total_rx_match_ratio);
+ 
+@@ -286,12 +286,12 @@ static const struct file_operations can_stats_proc_fops = {
+ static int can_reset_stats_proc_show(struct seq_file *m, void *v)
+ {
+ 	struct net *net = m->private;
+-	struct s_pstats *can_pstats = net->can.can_pstats;
+-	struct s_stats *can_stats = net->can.can_stats;
++	struct s_pstats *can_pstats = can_pernet(net)->can_pstats;
++	struct s_stats *can_stats = can_pernet(net)->can_stats;
+ 
+ 	user_reset = 1;
+ 
+-	if (net->can.can_stattimer.function == can_stat_update) {
++	if (can_pernet(net)->can_stattimer.function == can_stat_update) {
+ 		seq_printf(m, "Scheduled statistic reset #%ld.\n",
+ 				can_pstats->stats_reset + 1);
+ 	} else {
+@@ -361,7 +361,7 @@ static int can_rcvlist_proc_show(struct seq_file *m, void *v)
+ 	rcu_read_lock();
+ 
+ 	/* receive list for 'all' CAN devices (dev == NULL) */
+-	d = net->can.can_rx_alldev_list;
++	d = can_pernet(net)->can_rx_alldev_list;
+ 	can_rcvlist_proc_show_one(m, idx, NULL, d);
+ 
+ 	/* receive list for registered CAN devices */
+@@ -426,7 +426,7 @@ static int can_rcvlist_sff_proc_show(struct seq_file *m, void *v)
+ 	rcu_read_lock();
+ 
+ 	/* sff receive list for 'all' CAN devices (dev == NULL) */
+-	d = net->can.can_rx_alldev_list;
++	d = can_pernet(net)->can_rx_alldev_list;
+ 	can_rcvlist_proc_show_array(m, NULL, d->rx_sff, ARRAY_SIZE(d->rx_sff));
+ 
+ 	/* sff receive list for registered CAN devices */
+@@ -470,7 +470,7 @@ static int can_rcvlist_eff_proc_show(struct seq_file *m, void *v)
+ 	rcu_read_lock();
+ 
+ 	/* eff receive list for 'all' CAN devices (dev == NULL) */
+-	d = net->can.can_rx_alldev_list;
++	d = can_pernet(net)->can_rx_alldev_list;
+ 	can_rcvlist_proc_show_array(m, NULL, d->rx_eff, ARRAY_SIZE(d->rx_eff));
+ 
+ 	/* eff receive list for registered CAN devices */
+@@ -507,45 +507,45 @@ static const struct file_operations can_rcvlist_eff_proc_fops = {
+ void can_init_proc(struct net *net)
+ {
+ 	/* create /proc/net/can directory */
+-	net->can.proc_dir = proc_net_mkdir(net, "can", net->proc_net);
++	can_pernet(net)->proc_dir = proc_net_mkdir(net, "can", net->proc_net);
+ 
+-	if (!net->can.proc_dir) {
++	if (!can_pernet(net)->proc_dir) {
+ 		printk(KERN_INFO "can: failed to create /proc/net/can . "
+ 			   "CONFIG_PROC_FS missing?\n");
+ 		return;
+ 	}
+ 
+ 	/* own procfs entries from the AF_CAN core */
+-	net->can.pde_version     = proc_create(CAN_PROC_VERSION, 0644,
+-					       net->can.proc_dir,
++	can_pernet(net)->pde_version     = proc_create(CAN_PROC_VERSION, 0644,
++					       can_pernet(net)->proc_dir,
+ 					       &can_version_proc_fops);
+-	net->can.pde_stats       = proc_create(CAN_PROC_STATS, 0644,
+-					       net->can.proc_dir,
++	can_pernet(net)->pde_stats       = proc_create(CAN_PROC_STATS, 0644,
++					       can_pernet(net)->proc_dir,
+ 					       &can_stats_proc_fops);
+-	net->can.pde_reset_stats = proc_create(CAN_PROC_RESET_STATS, 0644,
+-					       net->can.proc_dir,
++	can_pernet(net)->pde_reset_stats = proc_create(CAN_PROC_RESET_STATS, 0644,
++					       can_pernet(net)->proc_dir,
+ 					       &can_reset_stats_proc_fops);
+-	net->can.pde_rcvlist_err = proc_create_data(CAN_PROC_RCVLIST_ERR, 0644,
+-						    net->can.proc_dir,
++	can_pernet(net)->pde_rcvlist_err = proc_create_data(CAN_PROC_RCVLIST_ERR, 0644,
++						    can_pernet(net)->proc_dir,
+ 						    &can_rcvlist_proc_fops,
+ 						    (void *)RX_ERR);
+-	net->can.pde_rcvlist_all = proc_create_data(CAN_PROC_RCVLIST_ALL, 0644,
+-						    net->can.proc_dir,
++	can_pernet(net)->pde_rcvlist_all = proc_create_data(CAN_PROC_RCVLIST_ALL, 0644,
++						    can_pernet(net)->proc_dir,
+ 						    &can_rcvlist_proc_fops,
+ 						    (void *)RX_ALL);
+-	net->can.pde_rcvlist_fil = proc_create_data(CAN_PROC_RCVLIST_FIL, 0644,
+-						    net->can.proc_dir,
++	can_pernet(net)->pde_rcvlist_fil = proc_create_data(CAN_PROC_RCVLIST_FIL, 0644,
++						    can_pernet(net)->proc_dir,
+ 						    &can_rcvlist_proc_fops,
+ 						    (void *)RX_FIL);
+-	net->can.pde_rcvlist_inv = proc_create_data(CAN_PROC_RCVLIST_INV, 0644,
+-						    net->can.proc_dir,
++	can_pernet(net)->pde_rcvlist_inv = proc_create_data(CAN_PROC_RCVLIST_INV, 0644,
++						    can_pernet(net)->proc_dir,
+ 						    &can_rcvlist_proc_fops,
+ 						    (void *)RX_INV);
+-	net->can.pde_rcvlist_eff = proc_create(CAN_PROC_RCVLIST_EFF, 0644,
+-					       net->can.proc_dir,
++	can_pernet(net)->pde_rcvlist_eff = proc_create(CAN_PROC_RCVLIST_EFF, 0644,
++					       can_pernet(net)->proc_dir,
+ 					       &can_rcvlist_eff_proc_fops);
+-	net->can.pde_rcvlist_sff = proc_create(CAN_PROC_RCVLIST_SFF, 0644,
+-					       net->can.proc_dir,
++	can_pernet(net)->pde_rcvlist_sff = proc_create(CAN_PROC_RCVLIST_SFF, 0644,
++					       can_pernet(net)->proc_dir,
+ 					       &can_rcvlist_sff_proc_fops);
+ }
+ 
+@@ -554,33 +554,33 @@ void can_init_proc(struct net *net)
+  */
+ void can_remove_proc(struct net *net)
+ {
+-	if (net->can.pde_version)
+-		remove_proc_entry(CAN_PROC_VERSION, net->can.proc_dir);
++	if (can_pernet(net)->pde_version)
++		remove_proc_entry(CAN_PROC_VERSION, can_pernet(net)->proc_dir);
+ 
+-	if (net->can.pde_stats)
+-		remove_proc_entry(CAN_PROC_STATS, net->can.proc_dir);
++	if (can_pernet(net)->pde_stats)
++		remove_proc_entry(CAN_PROC_STATS, can_pernet(net)->proc_dir);
+ 
+-	if (net->can.pde_reset_stats)
+-		remove_proc_entry(CAN_PROC_RESET_STATS, net->can.proc_dir);
++	if (can_pernet(net)->pde_reset_stats)
++		remove_proc_entry(CAN_PROC_RESET_STATS, can_pernet(net)->proc_dir);
+ 
+-	if (net->can.pde_rcvlist_err)
+-		remove_proc_entry(CAN_PROC_RCVLIST_ERR, net->can.proc_dir);
++	if (can_pernet(net)->pde_rcvlist_err)
++		remove_proc_entry(CAN_PROC_RCVLIST_ERR, can_pernet(net)->proc_dir);
+ 
+-	if (net->can.pde_rcvlist_all)
+-		remove_proc_entry(CAN_PROC_RCVLIST_ALL, net->can.proc_dir);
++	if (can_pernet(net)->pde_rcvlist_all)
++		remove_proc_entry(CAN_PROC_RCVLIST_ALL, can_pernet(net)->proc_dir);
+ 
+-	if (net->can.pde_rcvlist_fil)
+-		remove_proc_entry(CAN_PROC_RCVLIST_FIL, net->can.proc_dir);
++	if (can_pernet(net)->pde_rcvlist_fil)
++		remove_proc_entry(CAN_PROC_RCVLIST_FIL, can_pernet(net)->proc_dir);
+ 
+-	if (net->can.pde_rcvlist_inv)
+-		remove_proc_entry(CAN_PROC_RCVLIST_INV, net->can.proc_dir);
++	if (can_pernet(net)->pde_rcvlist_inv)
++		remove_proc_entry(CAN_PROC_RCVLIST_INV, can_pernet(net)->proc_dir);
+ 
+-	if (net->can.pde_rcvlist_eff)
+-		remove_proc_entry(CAN_PROC_RCVLIST_EFF, net->can.proc_dir);
++	if (can_pernet(net)->pde_rcvlist_eff)
++		remove_proc_entry(CAN_PROC_RCVLIST_EFF, can_pernet(net)->proc_dir);
+ 
+-	if (net->can.pde_rcvlist_sff)
+-		remove_proc_entry(CAN_PROC_RCVLIST_SFF, net->can.proc_dir);
++	if (can_pernet(net)->pde_rcvlist_sff)
++		remove_proc_entry(CAN_PROC_RCVLIST_SFF, can_pernet(net)->proc_dir);
+ 
+-	if (net->can.proc_dir)
++	if (can_pernet(net)->proc_dir)
+ 		remove_proc_entry("can", net->proc_net);
+ }

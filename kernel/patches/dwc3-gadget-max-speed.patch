@@ -1,0 +1,43 @@
+--- a/drivers/usb/dwc3/gadget.c
++++ b/drivers/usb/dwc3/gadget.c
+@@ -2151,6 +2151,7 @@ static int dwc3_gadget_run_stop(struct dwc3 *dwc, int is_on, int suspend)
+ {
+ 	u32			reg, reg1;
+ 	u32			timeout = 1500;
++	enum usb_device_speed	speed;
+ 
+ 	dbg_event(0xFF, "run_stop", is_on);
+ 	reg = dwc3_readl(dwc->regs, DWC3_DCTL);
+@@ -2168,9 +2169,13 @@ static int dwc3_gadget_run_stop(struct dwc3 *dwc, int is_on, int suspend)
+ 		reg1 = dwc3_readl(dwc->regs, DWC3_DCFG);
+ 		reg1 &= ~(DWC3_DCFG_SPEED_MASK);
+ 
+-		if (dwc->maximum_speed == USB_SPEED_SUPER_PLUS)
++		speed = dwc->maximum_speed;
++		if (dwc->gadget_driver && dwc->gadget_driver->max_speed < speed)
++			speed = dwc->gadget_driver->max_speed;
++
++		if (speed == USB_SPEED_SUPER_PLUS)
+ 			reg1 |= DWC3_DCFG_SUPERSPEED_PLUS;
+-		else if (dwc->maximum_speed == USB_SPEED_HIGH)
++		else if (speed == USB_SPEED_HIGH)
+ 			reg1 |= DWC3_DCFG_HIGHSPEED;
+ 		else
+ 			reg1 |= DWC3_DCFG_SUPERSPEED;
+@@ -2610,7 +2614,7 @@ static int dwc3_gadget_stop(struct usb_gadget *g)
+ 	return 0;
+ }
+ 
+-static void __maybe_unused dwc3_gadget_set_speed(struct usb_gadget *g,
++static void dwc3_gadget_set_speed(struct usb_gadget *g,
+ 				  enum usb_device_speed speed)
+ {
+ 	struct dwc3		*dwc = gadget_to_dwc(g);
+@@ -2686,6 +2690,7 @@ static const struct usb_gadget_ops dwc3_gadget_ops = {
+ 	.pullup			= dwc3_gadget_pullup,
+ 	.udc_start		= dwc3_gadget_start,
+ 	.udc_stop		= dwc3_gadget_stop,
++	.udc_set_speed		= dwc3_gadget_set_speed,
+ 	.restart		= dwc3_gadget_restart_usb_session,
+ };
+ 

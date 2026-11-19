@@ -1,0 +1,13 @@
+FROM ubuntu:20.04@sha256:8feb4d8ca5354def3d8fce243717141ce31e2c428701f6682bd2fafe15388214
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bc bison build-essential ca-certificates ccache clang-10 cpio curl flex g++-multilib \
+    gcc-multilib git kmod lib32ncurses5-dev lib32z1-dev libc6-dev-i386 \
+    libelf-dev libssl-dev libtinfo5 libxml2-utils lz4 python2 rsync unzip xz-utils zip \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN ln -s /usr/bin/clang-10 /usr/bin/clang \
+ && ln -s /usr/bin/python2 /usr/bin/python
+
+WORKDIR /workspace

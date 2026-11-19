@@ -1,0 +1,125 @@
+#!/system/bin/sh
+set -u
+
+PAYLOAD=/data/adb/modules/duo-technician/payload
+DIR=$PAYLOAD/modules
+DEPFILE=$PAYLOAD/modules.dep
+BUSYBOX=/data/adb/magisk/busybox
+
+die() { echo "duo-modprobe: $*" >&2; exit 1; }
+[ "$(id -u)" = 0 ] || die "run with su -c"
+
+normalize_file() {
+  local wanted candidate name normalized
+  case "$1" in
+    *.ko) printf '%s\n' "$1" ;;
+    *)
+      wanted=$(printf '%s' "$1" | tr '-' '_')
+      for candidate in "$DIR"/*.ko; do
+        name=${candidate##*/}
+        normalized=$(printf '%s' "${name%.ko}" | tr '-' '_')
+        [ "$normalized" = "$wanted" ] && { printf '%s\n' "$name"; return 0; }
+      done
+      return 1
+      ;;
+  esac
+}
+
+is_loaded() {
+  local probe
+  probe=$(printf '%s' "${1%.ko}" | tr '-' '_')
+  grep -q "^$probe " /proc/modules 2>/dev/null
+}
+
+load_one() {
+  local file dependencies dependency
+  file=$(normalize_file "$1") || die "unknown module: $1"
+  [ -r "$DIR/$file" ] || die "missing $DIR/$file"
+  is_loaded "$file" && return 0
+  dependencies=$(sed -n "s/^$file:[[:space:]]*//p" "$DEPFILE" 2>/dev/null)
+  for dependency in $dependencies; do
+    load_one "$dependency"
+  done
+  insmod "$DIR/$file" || die "failed loading $file; inspect dmesg"
+  echo "loaded $file"
+}
+
+load_list() {
+  local module
+  for module in $*; do load_one "$module"; done
+}
+
+load_serial() {
+  load_list usbserial cdc_acm ftdi_sio cp210x ch341 pl2303 \
+    ark3116 belkin_sa cypress_m8 f81232 keyspan mct_u232 \
+    ti_usb_3410_5052 usb_wwan option qcserial usb_serial_simple
+}
+load_network() {
+  load_list cdc_wdm cdc_eem cdc_mbim qmi_wwan rndis_host smsc75xx smsc95xx
+}
+load_bluetooth() {
+  load_list btbcm btintel btrtl btusb ath3k bcm203x bpa10x bfusb hci_uart hci_vhci bnep rfcomm hidp
+}
+load_storage() {
+  load_list crc_itu_t isofs udf ntfs squashfs uas usbmon
+}
+load_sdr() {
+  load_list e4000 fc0012 fc0013 fc2580 mt2060 mxl5005s qt1010 r820t si2157 si2168 tua9001 mn88472 mn88473 rtl2830 rtl2832 rtl2832_sdr dvb_usb_v2 dvb_usb_rtl28xxu airspy hackrf msi2500
+}
+load_wifi() {
+  load_list ath6kl_usb ath9k_htc carl9170 mt7601u rt2500usb rt73usb rt2800usb rtl8187 rtl8192cu rtl8xxxu zd1201 zd1211rw rndis_wlan
+}
+load_can() {
+  load_list can can_raw can_bcm can_gw can_dev vcan vxcan slcan ems_usb esd_usb2 gs_usb kvaser_usb peak_usb usb_8dev mcba_usb
+}
+load_usbip() {
+  load_list usbip_core vhci_hcd usbip_host
+}
+load_remote() {
+  load_list nbd cifs nfs nfsv2 nfsv3 nfsv4 iscsi_tcp
+}
+load_lab() {
+  load_list macvlan macvtap vxlan ip_gre ipip ip_set ip_set_hash_ip \
+    ip_set_hash_net xt_addrtype xt_set sch_fq_codel
+}
+
+status() {
+  printf 'Payload: '
+  sed -n '1p' "$PAYLOAD/build-info" 2>/dev/null || echo unknown
+  count=0
+  for module in "$DIR"/*.ko; do
+    file=${module##*/}
+    if is_loaded "$file"; then
+      printf '%s ' "${file%.ko}"
+      count=$((count + 1))
+    fi
+  done
+  printf '\nLoaded payload modules: %d\n' "$count"
+}
+
+verify() {
+  [ -x "$BUSYBOX" ] || die "Magisk BusyBox not found"
+  [ -r "$PAYLOAD/modules.sha256" ] || die "module hash manifest missing"
+  [ -r "$PAYLOAD/wlan-injection.sha256" ] || die "WLAN hash manifest missing"
+  (cd "$DIR" && "$BUSYBOX" sha256sum -c ../modules.sha256)
+  (cd "$PAYLOAD" && "$BUSYBOX" sha256sum -c wlan-injection.sha256)
+}
+
+case "${1:-list}" in
+  serial) load_serial ;;
+  network) load_network ;;
+  bluetooth) load_bluetooth ;;
+  storage) load_storage ;;
+  sdr) load_sdr ;;
+  wifi) load_wifi ;;
+  can) load_can ;;
+  usbip) load_usbip ;;
+  remote) load_remote ;;
+  lab) load_lab ;;
+  load) shift; [ "$#" -gt 0 ] || die "supply one or more module names"; load_list "$@" ;;
+  all) load_serial; load_network; load_bluetooth; load_storage; load_sdr; load_wifi; load_can; load_usbip; load_remote; load_lab ;;
+  status) status ;;
+  verify) verify ;;
+  list) echo "serial network bluetooth storage sdr wifi can usbip remote lab all load status verify" ;;
+  *) die "usage: duo-modprobe {serial|network|bluetooth|storage|sdr|wifi|can|usbip|remote|lab|all|load MODULE...|status|verify|list}" ;;
+esac
