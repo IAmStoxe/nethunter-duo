@@ -19,6 +19,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: '1.26.x'
+          cache: false
 
       - uses: actions/setup-java@v5
         with:
@@ -58,11 +59,9 @@ jobs:
       - name: Cross-compile Android helpers
         env:
           CGO_ENABLED: '0'
-          GOOS: linux
-          GOARCH: arm64
         run: |
           bash kernel/tools/test-hid-helpers.sh
-          go build -trimpath -o /tmp/injection-selftest kernel/tools/injection-selftest.go
+          GOOS=linux GOARCH=arm64 go build -trimpath -o /tmp/injection-selftest kernel/tools/injection-selftest.go
 
       - name: Build and lint Duo Technician app
         run: bash android-app/build.sh
