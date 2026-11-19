@@ -30,7 +30,7 @@ normal hardware ownership and battery behavior.
 | Network lab | macvlan/macvtap, VXLAN, GRE, IPIP, ipset and fq_codel | `duo-modprobe lab` | macvlan, VXLAN, ipset and fq_codel load on the final candidate with stock VETH/bonding/dummy/mirred settings preserved |
 | Audio and camera | Stock Android HAL and kernel paths retained | `duo-doctor`, `android/runtime-smoke.sh` | Services and ALSA devices present; audible playback, microphone capture and saved-photo tests remain manual |
 | One-tap Android console | Native, dependency-light Duo-aware launcher with guarded root actions and static shortcuts | `android-app/build.sh` | Final source builds and lints cleanly on the build host; the APK installs, launches and renders on the development Duo without a recorded process crash |
-| Reversible OEM cleanup | Read-only capture, reviewed plan, protected-package gates and incremental restore manifest | `host/Capture-DuoState.ps1`, `host/Apply-DuoDebloat.ps1` | Host tooling is implemented; no package will be disabled until the exact Duo inventory is captured and reviewed |
+| Reversible OEM cleanup | Per-user package disablement with a device inventory and restore manifest | `host/Capture-DuoState.ps1`, `host/Apply-DuoDebloat.ps1` | On the development Duo, 14 selected apps stayed disabled after reboot and the complete runtime smoke test passed. A restore manifest was recorded. |
 
 The final full image passed the temporary-boot procedure in
 [Installation](../installation/install.md), was installed through recovery `fastbootd`, and
