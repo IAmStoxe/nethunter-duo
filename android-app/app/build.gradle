@@ -27,6 +27,8 @@ android {
     }
 
     lint {
+        // The sideloaded launcher targets a fixed device on its final Android 12 firmware.
+        disable 'OldTargetApi'
         abortOnError true
         warningsAsErrors true
     }

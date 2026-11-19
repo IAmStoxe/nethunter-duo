@@ -1,7 +1,7 @@
 # Publishing checklist
 
 The working directory may contain private recovery material and large upstream
-binaries. Publish only the source-controlled project files.
+binaries. Push source and documentation to Git. Attach the project-built kernel, module ZIP, launcher and their SHA-256 manifest to a versioned GitHub Release. Keep stock boot images, proprietary recovery files, third-party APKs, and private captures off the release.
 
 1. Work from a checkout of [NetHunter Duo](https://github.com/IAmStoxe/nethunter-duo).
 2. Review `.gitignore` and stage the intended source changes.

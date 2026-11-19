@@ -6,6 +6,7 @@ NetHunter Duo is a community-maintained kernel and field toolkit for the first-g
 
 | Starting point | Guide |
 |---|---|
+| Download a prebuilt kit | [GitHub Releases](https://github.com/IAmStoxe/nethunter-duo/releases) · [Install the release](docs/installation/install.md#use-a-prebuilt-release) |
 | Build from source | [Local Linux or WSL2 build with Docker](docs/development/build.md) |
 | Set up a Duo | [Installation](docs/installation/install.md) · [Recovery](docs/installation/recovery.md) |
 | Use a configured Duo | [Field guide](docs/operation/field-guide.md) · [USB profiles](docs/operation/usb-profiles.md) |

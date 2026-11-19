@@ -1,6 +1,8 @@
 #!/system/bin/sh
 
 ui_print "- Installing Surface Duo Technician Toolkit"
+[ "$(getprop ro.product.device)" = duo ] || abort "This module requires a first-generation Surface Duo (duo)."
+[ "$(getprop ro.build.version.incremental)" = 202209020048 ] || abort "This module requires Surface Duo firmware 2022.902.48."
 ui_print "- Requires the matching technician kernel for unsigned modules"
 set_perm_recursive "$MODPATH" 0 0 0755 0644
 set_perm "$MODPATH/system/bin/duo-wifi" 0 0 0755

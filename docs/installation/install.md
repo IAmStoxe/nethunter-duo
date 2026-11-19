@@ -5,7 +5,7 @@ This project targets only Surface Duo 1 on final stock build `2022.902.48`
 `4.14.190-duo-p-0_0_0+`. A successful compile or ABI audit is not sufficient
 evidence that a boot image is safe to install.
 
-## Before building
+## Before installing
 
 1. Back up user data before bootloader unlocking, which resets the device. Start with an unlocked, Magisk-rooted Duo and authorized ADB. Record the current slot and retain its exact boot image as well as the stock image.
 2. Keep an untouched boot image from the exact installed firmware and record
@@ -13,14 +13,30 @@ evidence that a boot image is safe to install.
 3. Download the matching Microsoft recovery image and current Android SDK
    Platform Tools. Microsoft recommends at least 40% charge and the original
    or an equivalent known-good USB data cable for recovery.
-4. Capture `/proc/config.gz` and the live OTA modules with
-   `kernel/scripts/capture-device-abi.sh`; do not substitute files from a
-   different firmware release.
 
 Microsoft's recovery procedure:
 <https://support.microsoft.com/surface/recover-surface-duo-if-it-won-t-start>
 
-Build the candidate, toolkit ZIP, and optional launcher APK from matching inputs. [Build instructions](../development/build.md).
+## Use a prebuilt release
+
+On an x86-64 Linux or WSL2 machine, check out the Git tag for your selected [release](https://github.com/IAmStoxe/nethunter-duo/releases). Download the kernel Image, Magisk module ZIP, launcher APK, and `SHA256SUMS` from that release into a new directory. From that directory run `sha256sum --check SHA256SUMS`. Every entry must report `OK`.
+
+Back at the root of the tagged checkout, set the directory containing those downloads and repack the kernel with your own matching Magisk-patched boot image. This creates a candidate file on the computer.
+
+```bash
+release_dir=/absolute/path/to/nethunter-duo-release
+kernel/scripts/package-test-boot.sh \
+  /path/to/your-matching-magisk-boot.img \
+  "$release_dir/nethunter-duo-kernel-2022.902.48-arm64.Image" \
+  /path/to/Magisk.apk \
+  "$release_dir/duo-technician-test.img"
+```
+
+Keep the printed candidate digest for the temporary boot check below. Keep the original boot image separately. The raw `.Image` is the Linux kernel payload. Fastboot needs the repacked `.img` with your device's ramdisk and device tree.
+
+On the Duo, install `duo-technician-magisk.zip` from **Magisk → Modules → Install from storage** and reboot to activate it. Open the optional `DuoTechnician-1.0.0-debug.apk` with Android's package installer. This is the debug-signed preview launcher. Continue with [Activate and verify](#activate-and-verify) and [Candidate preflight](#candidate-preflight) before trying the new kernel.
+
+For a source build, capture the live firmware config and vendor modules and follow the [Docker build guide](../development/build.md). The following host commands are an alternative to the on-phone installers.
 
 ## Toolkit and Kali setup
 
